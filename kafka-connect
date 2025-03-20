@@ -1,265 +1,870 @@
-File Structure
-
-Copy
-kafka-ha/
+kafka-zk-connect-setup/
 ├── docker-compose.yml
 ├── Dockerfile
-└── connector-config/
-    └── mysql-jdbc-source.json
-1. docker-compose.yml
+└── config/
+    ├── zookeeper-1.properties
+    ├── zookeeper-2.properties
+    ├── zookeeper-3.properties
+    ├── server-1.properties
+    ├── server-2.properties
+    ├── server-3.properties
+    ├── connect-distributed-1.properties
+    ├── connect-distributed-2.properties
+    └── connect-distributed-3.properties
 
-yaml
-Copy
-version: '3.7'
+FROM openjdk:11-jre-slim
+
+# Install necessary tools
+RUN apt-get update && apt-get install -y wget netcat curl
+
+# Set Kafka version
+ENV KAFKA_VERSION=3.6.1
+ENV SCALA_VERSION=2.13
+
+# Download and extract Kafka - using the archive URL instead of the downloads URL
+RUN wget https://archive.apache.org/dist/kafka/${KAFKA_VERSION}/kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz \
+    && tar -xzf kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz -C /opt \
+    && rm kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz \
+    && ln -s /opt/kafka_${SCALA_VERSION}-${KAFKA_VERSION} /opt/kafka
+
+# Create directory for connector plugins and add the file connector
+RUN mkdir -p /opt/connectors/file-connector/lib
+RUN cp /opt/kafka/libs/kafka-connect-*.jar /opt/connectors/file-connector/lib/
+RUN cp /opt/kafka/libs/connect-*.jar /opt/connectors/file-connector/lib/
+
+# Set working directory
+WORKDIR /opt/kafka
+
+# Add a script to wait for Kafka and Zookeeper
+COPY wait-for-it.sh /usr/local/bin/wait-for-it.sh
+RUN chmod +x /usr/local/bin/wait-for-it.sh
+
+# Expose ports for Zookeeper, Kafka and Kafka Connect
+EXPOSE 2181 2182 2183 9092 9093 9094 8083 8084 8085
+
+CMD ["bash"]
+
+
+
+
+#!/bin/bash
+# Use this script to test if a given TCP host/port is available
+
+WAITFORIT_cmdname=${0##*/}
+
+echoerr() { if [[ $WAITFORIT_QUIET -ne 1 ]]; then echo "$@" 1>&2; fi }
+
+usage()
+{
+    cat << USAGE >&2
+Usage:
+    $WAITFORIT_cmdname host:port [-s] [-t timeout] [-- command args]
+    -h HOST | --host=HOST       Host or IP under test
+    -p PORT | --port=PORT       TCP port under test
+                                Alternatively, you specify the host and port as host:port
+    -s | --strict               Only execute subcommand if the test succeeds
+    -q | --quiet                Don't output any status messages
+    -t TIMEOUT | --timeout=TIMEOUT
+                                Timeout in seconds, zero for no timeout
+    -- COMMAND ARGS             Execute command with args after the test finishes
+USAGE
+    exit 1
+}
+
+wait_for()
+{
+    if [[ $WAITFORIT_TIMEOUT -gt 0 ]]; then
+        echoerr "$WAITFORIT_cmdname: waiting $WAITFORIT_TIMEOUT seconds for $WAITFORIT_HOST:$WAITFORIT_PORT"
+    else
+        echoerr "$WAITFORIT_cmdname: waiting for $WAITFORIT_HOST:$WAITFORIT_PORT without a timeout"
+    fi
+    WAITFORIT_start_ts=$(date +%s)
+    while :
+    do
+        if [[ $WAITFORIT_ISBUSY -eq 1 ]]; then
+            nc -z $WAITFORIT_HOST $WAITFORIT_PORT
+            WAITFORIT_result=$?
+        else
+            (echo -n > /dev/tcp/$WAITFORIT_HOST/$WAITFORIT_PORT) >/dev/null 2>&1
+            WAITFORIT_result=$?
+        fi
+        if [[ $WAITFORIT_result -eq 0 ]]; then
+            WAITFORIT_end_ts=$(date +%s)
+            echoerr "$WAITFORIT_cmdname: $WAITFORIT_HOST:$WAITFORIT_PORT is available after $((WAITFORIT_end_ts - WAITFORIT_start_ts)) seconds"
+            break
+        fi
+        sleep 1
+    done
+    return $WAITFORIT_result
+}
+
+wait_for_wrapper()
+{
+    # In order to support SIGINT during timeout: http://unix.stackexchange.com/a/57692
+    if [[ $WAITFORIT_QUIET -eq 1 ]]; then
+        timeout $WAITFORIT_BUSYTIMEFLAG $WAITFORIT_TIMEOUT $0 --quiet --child --host=$WAITFORIT_HOST --port=$WAITFORIT_PORT --timeout=$WAITFORIT_TIMEOUT &
+    else
+        timeout $WAITFORIT_BUSYTIMEFLAG $WAITFORIT_TIMEOUT $0 --child --host=$WAITFORIT_HOST --port=$WAITFORIT_PORT --timeout=$WAITFORIT_TIMEOUT &
+    fi
+    WAITFORIT_PID=$!
+    trap "kill -INT -$WAITFORIT_PID" INT
+    wait $WAITFORIT_PID
+    WAITFORIT_RESULT=$?
+    if [[ $WAITFORIT_RESULT -ne 0 ]]; then
+        echoerr "$WAITFORIT_cmdname: timeout occurred after waiting $WAITFORIT_TIMEOUT seconds for $WAITFORIT_HOST:$WAITFORIT_PORT"
+    fi
+    return $WAITFORIT_RESULT
+}
+
+# process arguments
+while [[ $# -gt 0 ]]
+do
+    case "$1" in
+        *:* )
+        WAITFORIT_hostport=(${1//:/ })
+        WAITFORIT_HOST=${WAITFORIT_hostport[0]}
+        WAITFORIT_PORT=${WAITFORIT_hostport[1]}
+        shift 1
+        ;;
+        --child)
+        WAITFORIT_CHILD=1
+        shift 1
+        ;;
+        -q | --quiet)
+        WAITFORIT_QUIET=1
+        shift 1
+        ;;
+        -s | --strict)
+        WAITFORIT_STRICT=1
+        shift 1
+        ;;
+        -h)
+        WAITFORIT_HOST="$2"
+        if [[ $WAITFORIT_HOST == "" ]]; then break; fi
+        shift 2
+        ;;
+        --host=*)
+        WAITFORIT_HOST="${1#*=}"
+        shift 1
+        ;;
+        -p)
+        WAITFORIT_PORT="$2"
+        if [[ $WAITFORIT_PORT == "" ]]; then break; fi
+        shift 2
+        ;;
+        --port=*)
+        WAITFORIT_PORT="${1#*=}"
+        shift 1
+        ;;
+        -t)
+        WAITFORIT_TIMEOUT="$2"
+        if [[ $WAITFORIT_TIMEOUT == "" ]]; then break; fi
+        shift 2
+        ;;
+        --timeout=*)
+        WAITFORIT_TIMEOUT="${1#*=}"
+        shift 1
+        ;;
+        --)
+        shift
+        WAITFORIT_CLI=("$@")
+        break
+        ;;
+        --help)
+        usage
+        ;;
+        *)
+        echoerr "Unknown argument: $1"
+        usage
+        ;;
+    esac
+done
+
+if [[ "$WAITFORIT_HOST" == "" || "$WAITFORIT_PORT" == "" ]]; then
+    echoerr "Error: you need to provide a host and port to test."
+    usage
+fi
+
+WAITFORIT_TIMEOUT=${WAITFORIT_TIMEOUT:-15}
+WAITFORIT_STRICT=${WAITFORIT_STRICT:-0}
+WAITFORIT_CHILD=${WAITFORIT_CHILD:-0}
+WAITFORIT_QUIET=${WAITFORIT_QUIET:-0}
+
+# Check to see if timeout is from busybox?
+WAITFORIT_TIMEOUT_PATH=$(type -p timeout)
+WAITFORIT_TIMEOUT_PATH=$(realpath $WAITFORIT_TIMEOUT_PATH 2>/dev/null || echo $WAITFORIT_TIMEOUT_PATH)
+
+WAITFORIT_BUSYTIMEFLAG=""
+if [[ $WAITFORIT_TIMEOUT_PATH =~ "busybox" ]]; then
+    WAITFORIT_ISBUSY=1
+    # Check if busybox timeout uses -t flag
+    timeout &>/dev/null
+    if [[ $? -ne 0 ]]; then
+        WAITFORIT_BUSYTIMEFLAG="-t"
+    fi
+else
+    WAITFORIT_ISBUSY=0
+fi
+
+if [[ $WAITFORIT_CHILD -gt 0 ]]; then
+    wait_for
+    WAITFORIT_RESULT=$?
+    exit $WAITFORIT_RESULT
+else
+    if [[ $WAITFORIT_TIMEOUT -gt 0 ]]; then
+        wait_for_wrapper
+        WAITFORIT_RESULT=$?
+    else
+        wait_for
+        WAITFORIT_RESULT=$?
+    fi
+fi
+
+if [[ $WAITFORIT_CLI != "" ]]; then
+    if [[ $WAITFORIT_RESULT -ne 0 && $WAITFORIT_STRICT -eq 1 ]]; then
+        echoerr "$WAITFORIT_cmdname: strict mode, refusing to execute subprocess"
+        exit $WAITFORIT_RESULT
+    fi
+    exec "${WAITFORIT_CLI[@]}"
+else
+    exit $WAITFORIT_RESULT
+fi
+
+
+
+
+
+
+
+
+
+
+# config/zookeeper-1.properties
+dataDir=/tmp/zookeeper-1
+clientPort=2181
+maxClientCnxns=0
+initLimit=5
+syncLimit=2
+tickTime=2000
+server.1=zookeeper-1:2888:3888
+server.2=zookeeper-2:2888:3888
+server.3=zookeeper-3:2888:3888
+autopurge.snapRetainCount=3
+autopurge.purgeInterval=24
+
+# config/zookeeper-2.properties
+dataDir=/tmp/zookeeper-2
+clientPort=2181
+maxClientCnxns=0
+initLimit=5
+syncLimit=2
+tickTime=2000
+server.1=zookeeper-1:2888:3888
+server.2=zookeeper-2:2888:3888
+server.3=zookeeper-3:2888:3888
+autopurge.snapRetainCount=3
+autopurge.purgeInterval=24
+
+# config/zookeeper-3.properties
+dataDir=/tmp/zookeeper-3
+clientPort=2181
+maxClientCnxns=0
+initLimit=5
+syncLimit=2
+tickTime=2000
+server.1=zookeeper-1:2888:3888
+server.2=zookeeper-2:2888:3888
+server.3=zookeeper-3:2888:3888
+autopurge.snapRetainCount=3
+autopurge.purgeInterval=24
+
+
+# config/server-1.properties
+broker.id=1
+listeners=PLAINTEXT://0.0.0.0:9092
+advertised.listeners=PLAINTEXT://kafka-1:9092
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT
+num.network.threads=3
+num.io.threads=8
+socket.send.buffer.bytes=102400
+socket.receive.buffer.bytes=102400
+socket.request.max.bytes=104857600
+log.dirs=/tmp/kafka-logs-1
+num.partitions=3
+num.recovery.threads.per.data.dir=1
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+log.retention.hours=168
+log.segment.bytes=1073741824
+log.retention.check.interval.ms=300000
+zookeeper.connect=zookeeper-1:2181,zookeeper-2:2181,zookeeper-3:2181
+zookeeper.connection.timeout.ms=18000
+group.initial.rebalance.delay.ms=0
+auto.create.topics.enable=true
+
+# config/server-2.properties
+broker.id=2
+listeners=PLAINTEXT://0.0.0.0:9092
+advertised.listeners=PLAINTEXT://kafka-2:9092
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT
+num.network.threads=3
+num.io.threads=8
+socket.send.buffer.bytes=102400
+socket.receive.buffer.bytes=102400
+socket.request.max.bytes=104857600
+log.dirs=/tmp/kafka-logs-2
+num.partitions=3
+num.recovery.threads.per.data.dir=1
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+log.retention.hours=168
+log.segment.bytes=1073741824
+log.retention.check.interval.ms=300000
+zookeeper.connect=zookeeper-1:2181,zookeeper-2:2181,zookeeper-3:2181
+zookeeper.connection.timeout.ms=18000
+group.initial.rebalance.delay.ms=0
+auto.create.topics.enable=true
+
+# config/server-3.properties
+broker.id=3
+listeners=PLAINTEXT://0.0.0.0:9092
+advertised.listeners=PLAINTEXT://kafka-3:9092
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT
+num.network.threads=3
+num.io.threads=8
+socket.send.buffer.bytes=102400
+socket.receive.buffer.bytes=102400
+socket.request.max.bytes=104857600
+log.dirs=/tmp/kafka-logs-3
+num.partitions=3
+num.recovery.threads.per.data.dir=1
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+log.retention.hours=168
+log.segment.bytes=1073741824
+log.retention.check.interval.ms=300000
+zookeeper.connect=zookeeper-1:2181,zookeeper-2:2181,zookeeper-3:2181
+zookeeper.connection.timeout.ms=18000
+group.initial.rebalance.delay.ms=0
+auto.create.topics.enable=true
+
+
+# config/connect-distributed-1.properties
+bootstrap.servers=kafka-1:9092,kafka-2:9092,kafka-3:9092
+group.id=connect-cluster
+key.converter=org.apache.kafka.connect.json.JsonConverter
+value.converter=org.apache.kafka.connect.json.JsonConverter
+key.converter.schemas.enable=true
+plugin.path=/opt/connectors
+value.converter.schemas.enable=true
+offset.storage.topic=connect-offsets
+offset.storage.replication.factor=3
+config.storage.topic=connect-configs
+config.storage.replication.factor=3
+status.storage.topic=connect-status
+status.storage.replication.factor=3
+plugin.path=/opt/connectors
+rest.port=8083
+rest.host.name=0.0.0.0
+rest.advertised.host.name=kafka-connect-1
+rest.advertised.port=8083
+
+# config/connect-distributed-2.properties
+bootstrap.servers=kafka-1:9092,kafka-2:9092,kafka-3:9092
+group.id=connect-cluster
+key.converter=org.apache.kafka.connect.json.JsonConverter
+value.converter=org.apache.kafka.connect.json.JsonConverter
+key.converter.schemas.enable=true
+plugin.path=/opt/connectors
+value.converter.schemas.enable=true
+offset.storage.topic=connect-offsets
+offset.storage.replication.factor=3
+config.storage.topic=connect-configs
+config.storage.replication.factor=3
+status.storage.topic=connect-status
+status.storage.replication.factor=3
+plugin.path=/opt/connectors
+rest.port=8083
+rest.host.name=0.0.0.0
+rest.advertised.host.name=kafka-connect-2
+rest.advertised.port=8083
+
+# config/connect-distributed-3.properties
+bootstrap.servers=kafka-1:9092,kafka-2:9092,kafka-3:9092
+group.id=connect-cluster
+key.converter=org.apache.kafka.connect.json.JsonConverter
+value.converter=org.apache.kafka.connect.json.JsonConverter
+key.converter.schemas.enable=true
+value.converter.schemas.enable=true
+offset.storage.topic=connect-offsets
+plugin.path=/opt/connectors
+offset.storage.replication.factor=3
+config.storage.topic=connect-configs
+config.storage.replication.factor=3
+status.storage.topic=connect-status
+status.storage.replication.factor=3
+plugin.path=/opt/connectors
+rest.port=8083
+rest.host.name=0.0.0.0
+rest.advertised.host.name=kafka-connect-3
+rest.advertised.port=8083
+
+
+
+
+
+
+
+version: '3'
+
+services:
+  # ZooKeeper Services
+  zookeeper-1:
+    build: .
+    container_name: zookeeper-1
+    hostname: zookeeper-1
+    ports:
+      - "22181:2181"
+    volumes:
+      - ./config/zookeeper-1.properties:/opt/kafka/config/zookeeper-1.properties
+    command: >
+      bash -c "mkdir -p /tmp/zookeeper-1 && 
+      echo 1 > /tmp/zookeeper-1/myid && 
+      bin/zookeeper-server-start.sh config/zookeeper-1.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms512M"
+    networks:
+      - kafka-net
+
+  zookeeper-2:
+    build: .
+    container_name: zookeeper-2
+    hostname: zookeeper-2
+    ports:
+      - "22182:2181"
+    volumes:
+      - ./config/zookeeper-2.properties:/opt/kafka/config/zookeeper-2.properties
+    command: >
+      bash -c "mkdir -p /tmp/zookeeper-2 && 
+      echo 2 > /tmp/zookeeper-2/myid && 
+      bin/zookeeper-server-start.sh config/zookeeper-2.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms512M"
+    depends_on:
+      - zookeeper-1
+    networks:
+      - kafka-net
+
+  zookeeper-3:
+    build: .
+    container_name: zookeeper-3
+    hostname: zookeeper-3
+    ports:
+      - "22183:2181"
+    volumes:
+      - ./config/zookeeper-3.properties:/opt/kafka/config/zookeeper-3.properties
+    command: >
+      bash -c "mkdir -p /tmp/zookeeper-3 && 
+      echo 3 > /tmp/zookeeper-3/myid && 
+      bin/zookeeper-server-start.sh config/zookeeper-3.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms512M"
+    depends_on:
+      - zookeeper-1
+      - zookeeper-2
+    networks:
+      - kafka-net
+
+  # Kafka Broker Services
+  kafka-1:
+    build: .
+    container_name: kafka-1
+    hostname: kafka-1
+    ports:
+      - "9092:9092"
+    volumes:
+      - ./config/server-1.properties:/opt/kafka/config/server-1.properties
+    command: >
+      bash -c "wait-for-it.sh zookeeper-1:2181 -t 120 && 
+      wait-for-it.sh zookeeper-2:2181 -t 120 && 
+      wait-for-it.sh zookeeper-3:2181 -t 120 && 
+      bin/kafka-server-start.sh config/server-1.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms1G"
+    depends_on:
+      - zookeeper-1
+      - zookeeper-2
+      - zookeeper-3
+    networks:
+      - kafka-net
+
+  kafka-2:
+    build: .
+    container_name: kafka-2
+    hostname: kafka-2
+    ports:
+      - "9093:9092"
+    volumes:
+      - ./config/server-2.properties:/opt/kafka/config/server-2.properties
+    command: >
+      bash -c "wait-for-it.sh zookeeper-1:2181 -t 120 && 
+      wait-for-it.sh zookeeper-2:2181 -t 120 && 
+      wait-for-it.sh zookeeper-3:2181 -t 120 && 
+      bin/kafka-server-start.sh config/server-2.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms1G"
+    depends_on:
+      - zookeeper-1
+      - zookeeper-2
+      - zookeeper-3
+      - kafka-1
+    networks:
+      - kafka-net
+
+  kafka-3:
+    build: .
+    container_name: kafka-3
+    hostname: kafka-3
+    ports:
+      - "9094:9092"
+    volumes:
+      - ./config/server-3.properties:/opt/kafka/config/server-3.properties
+    command: >
+      bash -c "wait-for-it.sh zookeeper-1:2181 -t 120 && 
+      wait-for-it.sh zookeeper-2:2181 -t 120 && 
+      wait-for-it.sh zookeeper-3:2181 -t 120 && 
+      bin/kafka-server-start.sh config/server-3.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms1G"
+    depends_on:
+      - zookeeper-1
+      - zookeeper-2
+      - zookeeper-3
+      - kafka-1
+      - kafka-2
+    networks:
+      - kafka-net
+
+  # Kafka Connect Services
+  kafka-connect-1:
+    build: .
+    container_name: kafka-connect-1
+    hostname: kafka-connect-1
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./config/connect-distributed-1.properties:/opt/kafka/config/connect-distributed-1.properties
+    command: >
+      bash -c "wait-for-it.sh kafka-1:9092 -t 120 && 
+      wait-for-it.sh kafka-2:9092 -t 120 && 
+      wait-for-it.sh kafka-3:9092 -t 120 && 
+      bin/connect-distributed.sh config/connect-distributed-1.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms1G"
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+    networks:
+      - kafka-net
+
+  kafka-connect-2:
+    build: .
+    container_name: kafka-connect-2
+    hostname: kafka-connect-2
+    ports:
+      - "8084:8083"
+    volumes:
+      - ./config/connect-distributed-2.properties:/opt/kafka/config/connect-distributed-2.properties
+    command: >
+      bash -c "wait-for-it.sh kafka-1:9092 -t 120 && 
+      wait-for-it.sh kafka-2:9092 -t 120 && 
+      wait-for-it.sh kafka-3:9092 -t 120 && 
+      wait-for-it.sh kafka-connect-1:8083 -t 120 && 
+      bin/connect-distributed.sh config/connect-distributed-2.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms1G"
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+      - kafka-connect-1
+    networks:
+      - kafka-net
+
+  kafka-connect-3:
+    build: .
+    container_name: kafka-connect-3
+    hostname: kafka-connect-3
+    ports:
+      - "8085:8083"
+    volumes:
+      - ./config/connect-distributed-3.properties:/opt/kafka/config/connect-distributed-3.properties
+    command: >
+      bash -c "wait-for-it.sh kafka-1:9092 -t 120 && 
+      wait-for-it.sh kafka-2:9092 -t 120 && 
+      wait-for-it.sh kafka-3:9092 -t 120 && 
+      wait-for-it.sh kafka-connect-1:8083 -t 120 && 
+      wait-for-it.sh kafka-connect-2:8083 -t 120 && 
+      bin/connect-distributed.sh config/connect-distributed-3.properties"
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms1G"
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+      - kafka-connect-1
+      - kafka-connect-2
+    networks:
+      - kafka-net
 
 networks:
   kafka-net:
     driver: bridge
 
-services:
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.0.0
-    hostname: zookeeper
-    networks:
-      - kafka-net
-    ports:
-      - "2181:2181"
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
 
-  kafka1:
-    image: confluentinc/cp-kafka:7.0.0
-    hostname: kafka1
-    networks:
-      - kafka-net
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
 
-  kafka2:
-    image: confluentinc/cp-kafka:7.0.0
-    hostname: kafka2
-    networks:
-      - kafka-net
-    depends_on:
-      - zookeeper
-    ports:
-      - "9093:9093"
-    environment:
-      KAFKA_BROKER_ID: 2
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
 
-  kafka3:
-    image: confluentinc/cp-kafka:7.0.0
-    hostname: kafka3
-    networks:
-      - kafka-net
-    depends_on:
-      - zookeeper
-    ports:
-      - "9094:9094"
-    environment:
-      KAFKA_BROKER_ID: 3
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9094
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+Verification Steps
+Let's verify that our setup is working correctly:
 
-  connect1:
-    build: .
-    hostname: connect1
-    networks:
-      - kafka-net
-    depends_on:
-      - kafka1
-      - kafka2
-      - kafka3
-    ports:
-      - "8083:8083"
-    environment:
-      CONNECT_BOOTSTRAP_SERVERS: "kafka1:9092,kafka2:9093,kafka3:9094"
-      CONNECT_GROUP_ID: connect-cluster
-      CONNECT_CONFIG_STORAGE_TOPIC: connect-configs
-      CONNECT_OFFSET_STORAGE_TOPIC: connect-offsets
-      CONNECT_STATUS_STORAGE_TOPIC: connect-statuses
-      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 3
-      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 3
-      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
-      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
-      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
-      CONNECT_REST_ADVERTISED_HOST_NAME: "connect1"
-      CONNECT_REST_PORT: 8083
-      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+Check that all containers are running:
 
-  connect2:
-    build: .
-    hostname: connect2
-    networks:
-      - kafka-net
-    depends_on:
-      - connect1
-    ports:
-      - "8084:8084"
-    environment:
-      CONNECT_BOOTSTRAP_SERVERS: "kafka1:9092,kafka2:9093,kafka3:9094"
-      CONNECT_GROUP_ID: connect-cluster
-      CONFIG_STORAGE_TOPIC: connect-configs
-      OFFSET_STORAGE_TOPIC: connect-offsets
-      STATUS_STORAGE_TOPIC: connect-statuses
-      CONNECT_REST_ADVERTISED_HOST_NAME: "connect2"
-      CONNECT_REST_PORT: 8084
+bashCopydocker-compose ps
+You should see all 9 containers (3 ZooKeeper, 3 Kafka, 3 Kafka Connect) running.
 
-  connect3:
-    build: .
-    hostname: connect3
-    networks:
-      - kafka-net
-    depends_on:
-      - connect1
-    ports:
-      - "8085:8085"
-    environment:
-      CONNECT_BOOTSTRAP_SERVERS: "kafka1:9092,kafka2:9093,kafka3:9094"
-      CONNECT_GROUP_ID: connect-cluster
-      CONFIG_STORAGE_TOPIC: connect-configs
-      OFFSET_STORAGE_TOPIC: connect-offsets
-      STATUS_STORAGE_TOPIC: connect-statuses
-      CONNECT_REST_ADVERTISED_HOST_NAME: "connect3"
-      CONNECT_REST_PORT: 8085
+Verify ZooKeeper ensemble:
 
-  mysql:
-    image: mysql:8.0
-    networks:
-      - kafka-net
-    ports:
-      - "3306:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: inventory
-      MYSQL_USER: kafka_user
-      MYSQL_PASSWORD: kafka_pass
-    command: --default-authentication-plugin=mysql_native_password
-2. Dockerfile
+bashCopydocker exec -it zookeeper-1 bin/zookeeper-shell.sh localhost:2181 ls /brokers/ids
+This should show [1, 2, 3], indicating that all three Kafka brokers are registered with ZooKeeper.
 
-dockerfile
-Copy
-FROM confluentinc/cp-kafka-connect:7.0.0
+Verify Kafka cluster:
 
-# Install JDBC connector with proper permissions
-RUN confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:10.0.0 \
-    && chmod -R a+rw /usr/share/confluent-hub-components
-3. connector-config/mysql-jdbc-source.json
+bashCopy# Create a test topic
+docker exec -it kafka-1 bin/kafka-topics.sh --create --topic test-topic --bootstrap-server kafka-1:9092,kafka-2:9092,kafka-3:9092 --partitions 3 --replication-factor 3
 
-json
-Copy
-{
-  "name": "mysql-jdbc-source",
+# List topics
+docker exec -it kafka-1 bin/kafka-topics.sh --list --bootstrap-server kafka-1:9092
+
+# Describe the topic to verify replication
+docker exec -it kafka-1 bin/kafka-topics.sh --describe --topic test-topic --bootstrap-server kafka-1:9092
+The describe command should show that each partition has 3 replicas and they are in sync.
+
+Verify Kafka Connect distributed mode:
+
+bashCopy# Check the Kafka Connect REST API
+curl -s http://localhost:8083/ | jq
+curl -s http://localhost:8084/ | jq
+curl -s http://localhost:8085/ | jq
+
+# List installed connectors
+curl -s http://localhost:8083/connector-plugins | jq
+All three Kafka Connect nodes should respond with their version information, and the list of connector plugins should be the same across all nodes, showing that they're part of the same distributed cluster.
+
+Create a test connector to verify distributed operation:
+
+bashCopy# Create a sample file source connector
+curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d '{
+  "name": "file-source",
   "config": {
-    "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
-    "connection.url": "jdbc:mysql://mysql:3306/inventory",
-    "connection.user": "kafka_user",
-    "connection.password": "kafka_pass",
-    "mode": "timestamp+incrementing",
-    "incrementing.column.name": "id",
-    "timestamp.column.name": "modified_at",
-    "table.whitelist": "products",
-    "topic.prefix": "mysql-",
-    "poll.interval.ms": "5000",
-    "validate.non.null": "false",
-    "schema.pattern": "inventory",
-    "numeric.mapping": "best_fit",
-    "transforms": "createKey,extractInt",
-    "transforms.createKey.type": "org.apache.kafka.connect.transforms.ValueToKey",
-    "transforms.createKey.fields": "id",
-    "transforms.extractInt.type": "org.apache.kafka.connect.transforms.ExtractField$Key",
-    "transforms.extractInt.field": "id"
+    "connector.class": "org.apache.kafka.connect.file.FileStreamSourceConnector",
+    "tasks.max": "1",
+    "file": "/tmp/test.txt",
+    "topic": "test-file-topic"
   }
-}
-Deployment Commands
+}'
 
-bash
-Copy
-# Clean start
-docker-compose down -v
-docker-compose build --no-cache
-docker-compose up -d
+# Verify the connector is visible from all Connect nodes
+curl -s http://localhost:8083/connectors | jq
+curl -s http://localhost:8084/connectors | jq
+curl -s http://localhost:8085/connectors | jq
 
-# Wait for cluster initialization
-sleep 120
+# Create a test file with some data
+docker exec -it kafka-connect-1 bash -c "echo 'This is a test line' > /tmp/test.txt"
 
-# Create internal topics manually
-docker-compose exec kafka1 kafka-topics --create \
-  --bootstrap-server kafka1:9092 \
-  --topic connect-configs \
-  --partitions 1 \
-  --replication-factor 3 \
-  --config cleanup.policy=compact
+# Verify the data is published to the Kafka topic
+docker exec -it kafka-1 bin/kafka-console-consumer.sh --bootstrap-serv
 
-docker-compose exec kafka1 kafka-topics --create \
-  --bootstrap-server kafka1:9092 \
-  --topic connect-offsets \
-  --partitions 25 \
-  --replication-factor 3 \
-  --config cleanup.policy=compact
 
-docker-compose exec kafka1 kafka-topics --create \
-  --bootstrap-server kafka1:9092 \
-  --topic connect-statuses \
-  --partitions 5 \
-  --replication-factor 3 \
-  --config cleanup.policy=compact
 
-# Create JDBC connector
-curl -X POST -H "Content-Type: application/json" \
-  --data @connector-config/mysql-jdbc-source.json \
-  http://localhost:8083/connectors
 
-# Verify setup
-curl http://localhost:8083/connectors/mysql-jdbc-source/status | jq
-Key Fixes Implemented:
 
-Explicit Docker network (kafka-net) for DNS resolution
+Verifying Fault Tolerance in the Kafka and Kafka Connect Distributed Setup
+Let's explore how to verify the fault tolerance of our distributed setup by simulating failures of different components and observing how the system behaves.
+1. Verifying Kafka Broker Fault Tolerance
+To test what happens when a Kafka broker goes down:
+bashCopy# Stop kafka-2
+docker-compose stop kafka-2
 
-Correct advertised listeners configuration
+# Check the status of brokers in ZooKeeper
+docker exec -it zookeeper-1 bin/zookeeper-shell.sh localhost:2181 ls /brokers/ids
+You should now see only [1, 3] in the ZooKeeper broker list.
+Next, verify that you can still produce and consume messages:
+bashCopy# Create a new topic with replication factor 2 (since we only have 2 brokers now)
+docker exec -it kafka-1 bin/kafka-topics.sh --create --topic failover-test --bootstrap-server kafka-1:9092,kafka-3:9092 --partitions 2 --replication-factor 2
 
-Proper Connect worker environment variables
+# Produce some messages
+docker exec -it kafka-1 bin/kafka-console-producer.sh --bootstrap-server kafka-1:9092,kafka-3:9092 --topic failover-test
+# Type some messages and hit Ctrl+D to exit
 
-Manual topic creation for Connect internal topics
+# Consume messages
+docker exec -it kafka-3 bin/kafka-console-consumer.sh --bootstrap-server kafka-1:9092,kafka-3:9092 --topic failover-test --from-beginning
+You should still be able to produce and consume messages with one broker down. Now bring the broker back up:
+bashCopydocker-compose start kafka-2
+Wait a minute for rebalancing, then check the broker list again to confirm it's back:
+bashCopydocker exec -it zookeeper-1 bin/zookeeper-shell.sh localhost:2181 ls /brokers/ids
+You should see [1, 2, 3] again.
+2. Verifying ZooKeeper Fault Tolerance
+ZooKeeper uses a majority-based consensus protocol, so the cluster can remain operational as long as a majority (2 out of 3) of nodes are up:
+bashCopy# Stop one ZooKeeper node
+docker-compose stop zookeeper-3
 
-Fixed JDBC connector installation in Dockerfile
+# Verify that Kafka still works
+docker exec -it kafka-1 bin/kafka-topics.sh --list --bootstrap-server kafka-1:9092
+The system should still be operational. Now try stopping another ZooKeeper node:
+bashCopydocker-compose stop zookeeper-2
+At this point, with only 1 of 3 ZooKeeper nodes running, Kafka operations that require ZooKeeper will begin to fail since ZooKeeper can't form a quorum. You might see timeouts or connection errors.
+Restart the ZooKeeper nodes to restore the cluster:
+bashCopydocker-compose start zookeeper-2 zookeeper-3
+Wait for a minute, then verify operations are back to normal:
+bashCopydocker exec -it kafka-1 bin/kafka-topics.sh --list --bootstrap-server kafka-1:9092
+3. Verifying Kafka Connect Fault Tolerance
+To verify Kafka Connect's fault tolerance:
+bashCopy# First, check the status of all connectors
+curl -s http://localhost:8083/connectors | jq
 
-Network dependency ordering
+# If no connectors are running, create a test connector
+curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d '{
+  "name": "fault-tolerance-test",
+  "config": {
+    "connector.class": "org.apache.kafka.connect.file.FileStreamSourceConnector",
+    "tasks.max": "1",
+    "file": "/tmp/fault-test.txt",
+    "topic": "fault-test-topic"
+  }
+}'
 
-Verification Steps:
+# Create the test file
+docker exec -it kafka-connect-1 bash -c "echo 'This is a fault tolerance test' > /tmp/fault-test.txt"
 
-Check DNS resolution:
+# Verify the connector is running
+curl -s http://localhost:8083/connectors/fault-tolerance-test/status | jq
+Now, stop one of the Connect nodes:
+bashCopydocker-compose stop kafka-connect-1
+Check that the connector is still visible and working from other nodes:
+bashCopycurl -s http://localhost:8084/connectors | jq
+curl -s http://localhost:8084/connectors/fault-tolerance-test/status | jq
+The connector should still be listed and its tasks should be redistributed to the remaining Connect workers.
+Create new data and verify it's processed:
+bashCopydocker exec -it kafka-connect-2 bash -c "echo 'This is a failover test line' >> /tmp/fault-test.txt"
 
-bash
-Copy
-docker exec connect1 ping -c 1 kafka1
-docker exec connect1 ping -c 1 kafka2
-docker exec connect1 ping -c 1 kafka3
-Verify Kafka broker availability:
+# Check if the message made it to the topic
+docker exec -it kafka-1 bin/kafka-console-consumer.sh --bootstrap-server kafka-1:9092 --topic fault-test-topic --from-beginning
+You should see the new line in the topic output, showing that Kafka Connect continues working with one node down.
+Now restart the Connect node:
+bashCopydocker-compose start kafka-connect-1
+Wait a moment, then check the connector status again:
+bashCopycurl -s http://localhost:8083/connectors/fault-tolerance-test/status | jq
+The tasks may rebalance again across all three workers.
+4. Understanding the Interconnections
+The system interconnections work as follows:
 
-bash
-Copy
-docker exec kafka1 kafka-broker-api-versions \
-  --bootstrap-server kafka1:9092
-Check Connect REST API:
+ZooKeeper Ensemble:
 
-bash
-Copy
-curl -I http://localhost:8083/
-This configuration ensures proper network communication between all components and provides a resilient MySQL-to-Kafka pipeline with automatic failover capabilities.
+The 3 ZooKeeper nodes form a quorum-based cluster
+They maintain their own leader election for internal coordination
+They need a majority (at least 2 nodes) to operate
+
+
+Kafka Broker Cluster:
+
+All Kafka brokers connect to all ZooKeeper nodes (for redundancy)
+Brokers use ZooKeeper for controller election and metadata storage
+Kafka topics are distributed across all brokers with replication
+If a broker fails, its leader partitions move to other brokers automatically
+
+
+Kafka Connect Cluster:
+
+All Connect workers connect to all Kafka brokers
+They form a distributed worker group with the same group.id
+They store their configuration, offset and status in special Kafka topics
+If a Connect worker fails, its tasks are redistributed to other workers
+All Connect workers in the cluster can see and manage all connectors
+
+
+
+5. Testing Complete Failover Scenarios
+To test a more complex failover scenario, try stopping a component from each layer:
+bashCopy# Stop one node from each tier
+docker-compose stop zookeeper-3 kafka-3 kafka-connect-3
+
+# Verify the system is still working
+docker exec -it kafka-1 bin/kafka-topics.sh --list --bootstrap-server kafka-1:9092
+curl -s http://localhost:8084/connectors | jq
+As long as you maintain quorum in ZooKeeper (2 of 3 nodes) and have at least one Kafka broker and one Connect worker running, the system should remain operational, although with reduced capacity and redundancy.
+6. Checking Logs for Failover Evidence
+To better understand what happens during failures, check the logs:
+bashCopy# When a broker goes down, check other brokers' logs
+docker-compose logs kafka-1 | grep -i leader
+
+# When a Connect worker goes down, check other workers' logs
+docker-compose logs kafka-connect-2 | grep -i rebalance
+In the logs, you'll see evidence of:
+
+Leader elections for Kafka partitions
+Task rebalancing for Kafka Connect
+Connection attempts and reconnections
+
+These logs confirm that the distributed components are detecting failures and automatically recovering from them.
+Summary
+Our distributed Kafka system demonstrates the following fault tolerance characteristics:
+
+ZooKeeper Ensemble: Can tolerate the loss of 1 out of 3 nodes
+Kafka Cluster: Can tolerate broker failures as long as topic replicas exist on other brokers
+Kafka Connect Cluster: Can tolerate worker failures with tasks redistributing automatically
+
+This fault tolerance is achieved through:
+
+Distributed consensus protocols in ZooKeeper
+Partition replication in Kafka
+Distributed worker coordination in Kafka Connect
+
+These mechanisms ensure that as long as a minimum number of nodes remain operational, the system continues to function, possibly with reduced capacity but without complete failure.
+
+
+
+
+
+
+
+
+For verifying fault tolerance without using the file connector, we can:
+
+Create a test topic:
+
+bashCopydocker exec -it kafka-1 bin/kafka-topics.sh --create --topic fault-test-topic --bootstrap-server kafka-1:9092 --partitions 3 --replication-factor 3
+
+Test failover by stopping one Kafka broker:
+
+bashCopydocker-compose stop kafka-2
+
+Verify that you can still produce and consume messages:
+
+bashCopy# Produce messages
+docker exec -it kafka-1 bin/kafka-console-producer.sh --bootstrap-server kafka-1:9092,kafka-3:9092 --topic fault-test-topic
+# Type some messages and hit Ctrl+D to exit
+
+# Consume messages
+docker exec -it kafka-3 bin/kafka-console-consumer.sh --bootstrap-server kafka-1:9092,kafka-3:9092 --topic fault-test-topic --from-beginning
+
+To test Kafka Connect failover, you can still use the MirrorSource connector as shown above, then:
+
+bashCopy# Stop one of the Connect nodes
+docker-compose stop kafka-connect-1
+
+# Verify that the connector is still visible from other nodes
+curl -s http://localhost:8084/connectors | jq
