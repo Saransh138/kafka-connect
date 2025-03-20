@@ -1,0 +1,265 @@
+File Structure
+
+Copy
+kafka-ha/
+├── docker-compose.yml
+├── Dockerfile
+└── connector-config/
+    └── mysql-jdbc-source.json
+1. docker-compose.yml
+
+yaml
+Copy
+version: '3.7'
+
+networks:
+  kafka-net:
+    driver: bridge
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.0
+    hostname: zookeeper
+    networks:
+      - kafka-net
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka1:
+    image: confluentinc/cp-kafka:7.0.0
+    hostname: kafka1
+    networks:
+      - kafka-net
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+  kafka2:
+    image: confluentinc/cp-kafka:7.0.0
+    hostname: kafka2
+    networks:
+      - kafka-net
+    depends_on:
+      - zookeeper
+    ports:
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+
+  kafka3:
+    image: confluentinc/cp-kafka:7.0.0
+    hostname: kafka3
+    networks:
+      - kafka-net
+    depends_on:
+      - zookeeper
+    ports:
+      - "9094:9094"
+    environment:
+      KAFKA_BROKER_ID: 3
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+
+  connect1:
+    build: .
+    hostname: connect1
+    networks:
+      - kafka-net
+    depends_on:
+      - kafka1
+      - kafka2
+      - kafka3
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka1:9092,kafka2:9093,kafka3:9094"
+      CONNECT_GROUP_ID: connect-cluster
+      CONNECT_CONFIG_STORAGE_TOPIC: connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: connect-statuses
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "connect1"
+      CONNECT_REST_PORT: 8083
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+
+  connect2:
+    build: .
+    hostname: connect2
+    networks:
+      - kafka-net
+    depends_on:
+      - connect1
+    ports:
+      - "8084:8084"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka1:9092,kafka2:9093,kafka3:9094"
+      CONNECT_GROUP_ID: connect-cluster
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-statuses
+      CONNECT_REST_ADVERTISED_HOST_NAME: "connect2"
+      CONNECT_REST_PORT: 8084
+
+  connect3:
+    build: .
+    hostname: connect3
+    networks:
+      - kafka-net
+    depends_on:
+      - connect1
+    ports:
+      - "8085:8085"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka1:9092,kafka2:9093,kafka3:9094"
+      CONNECT_GROUP_ID: connect-cluster
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-statuses
+      CONNECT_REST_ADVERTISED_HOST_NAME: "connect3"
+      CONNECT_REST_PORT: 8085
+
+  mysql:
+    image: mysql:8.0
+    networks:
+      - kafka-net
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: inventory
+      MYSQL_USER: kafka_user
+      MYSQL_PASSWORD: kafka_pass
+    command: --default-authentication-plugin=mysql_native_password
+2. Dockerfile
+
+dockerfile
+Copy
+FROM confluentinc/cp-kafka-connect:7.0.0
+
+# Install JDBC connector with proper permissions
+RUN confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:10.0.0 \
+    && chmod -R a+rw /usr/share/confluent-hub-components
+3. connector-config/mysql-jdbc-source.json
+
+json
+Copy
+{
+  "name": "mysql-jdbc-source",
+  "config": {
+    "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+    "connection.url": "jdbc:mysql://mysql:3306/inventory",
+    "connection.user": "kafka_user",
+    "connection.password": "kafka_pass",
+    "mode": "timestamp+incrementing",
+    "incrementing.column.name": "id",
+    "timestamp.column.name": "modified_at",
+    "table.whitelist": "products",
+    "topic.prefix": "mysql-",
+    "poll.interval.ms": "5000",
+    "validate.non.null": "false",
+    "schema.pattern": "inventory",
+    "numeric.mapping": "best_fit",
+    "transforms": "createKey,extractInt",
+    "transforms.createKey.type": "org.apache.kafka.connect.transforms.ValueToKey",
+    "transforms.createKey.fields": "id",
+    "transforms.extractInt.type": "org.apache.kafka.connect.transforms.ExtractField$Key",
+    "transforms.extractInt.field": "id"
+  }
+}
+Deployment Commands
+
+bash
+Copy
+# Clean start
+docker-compose down -v
+docker-compose build --no-cache
+docker-compose up -d
+
+# Wait for cluster initialization
+sleep 120
+
+# Create internal topics manually
+docker-compose exec kafka1 kafka-topics --create \
+  --bootstrap-server kafka1:9092 \
+  --topic connect-configs \
+  --partitions 1 \
+  --replication-factor 3 \
+  --config cleanup.policy=compact
+
+docker-compose exec kafka1 kafka-topics --create \
+  --bootstrap-server kafka1:9092 \
+  --topic connect-offsets \
+  --partitions 25 \
+  --replication-factor 3 \
+  --config cleanup.policy=compact
+
+docker-compose exec kafka1 kafka-topics --create \
+  --bootstrap-server kafka1:9092 \
+  --topic connect-statuses \
+  --partitions 5 \
+  --replication-factor 3 \
+  --config cleanup.policy=compact
+
+# Create JDBC connector
+curl -X POST -H "Content-Type: application/json" \
+  --data @connector-config/mysql-jdbc-source.json \
+  http://localhost:8083/connectors
+
+# Verify setup
+curl http://localhost:8083/connectors/mysql-jdbc-source/status | jq
+Key Fixes Implemented:
+
+Explicit Docker network (kafka-net) for DNS resolution
+
+Correct advertised listeners configuration
+
+Proper Connect worker environment variables
+
+Manual topic creation for Connect internal topics
+
+Fixed JDBC connector installation in Dockerfile
+
+Network dependency ordering
+
+Verification Steps:
+
+Check DNS resolution:
+
+bash
+Copy
+docker exec connect1 ping -c 1 kafka1
+docker exec connect1 ping -c 1 kafka2
+docker exec connect1 ping -c 1 kafka3
+Verify Kafka broker availability:
+
+bash
+Copy
+docker exec kafka1 kafka-broker-api-versions \
+  --bootstrap-server kafka1:9092
+Check Connect REST API:
+
+bash
+Copy
+curl -I http://localhost:8083/
+This configuration ensures proper network communication between all components and provides a resilient MySQL-to-Kafka pipeline with automatic failover capabilities.
